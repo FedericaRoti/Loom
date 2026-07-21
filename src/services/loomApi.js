@@ -3,6 +3,23 @@ import { createMockArtifactPlan, validateArtifactPlan } from '../../shared/artif
 
 const API_MODE = import.meta.env.VITE_LOOM_API_MODE ?? 'mock'
 const API_BASE_URL = import.meta.env.VITE_LOOM_API_BASE_URL ?? '/api'
+const requestTimeoutMs = 30000
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs)
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Loom took too long to respond. A stable demo reply will be used instead.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
+}
 
 export const voiceRuntime = {
   artifactPlannerModel: import.meta.env.VITE_LOOM_ARTIFACT_PLANNER_MODEL ?? 'gpt-5.6-sol',
@@ -88,7 +105,7 @@ export async function requestConversationReply({ artifactType, boardContext = []
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/conversation/respond`, {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/conversation/respond`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -138,7 +155,7 @@ export async function requestArtifactPlan({ activeArtifact = null, currentView =
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/artifact/plan`, {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/artifact/plan`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

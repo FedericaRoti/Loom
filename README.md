@@ -15,7 +15,7 @@ The principle behind all of it: Loom adapts the medium to the content, not the o
 
 ## Demo
 
-- 3-minute YouTube video: [add link]
+- 3-minute YouTube video: [Watch the Loom demo](https://youtu.be/xT3sMeB-7TQ)
 - Live demo: [loom-kappa-gules.vercel.app](https://loom-kappa-gules.vercel.app)
 - Included example sessions:
   - Projectile motion: a manipulable trajectory with launch-angle and velocity controls.

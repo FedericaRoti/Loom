@@ -56,7 +56,13 @@ function getTopicChoice(text) {
 
 function appendVisualTransition(text, plan) {
   if (!plan?.spokenChoice || plan.viewAction === 'stay-on-board') return text
-  return `${text.trim()} ${plan.spokenChoice.trim()}`
+
+  const combined = `${text.trim()} ${plan.spokenChoice.trim()}`
+  if (plan.viewAction === 'show-artifact' && !/\b(?:let me show you|now .*show you|i(?:'ll| will) show you)\b/i.test(combined)) {
+    return `${text.trim()} Now let me show you. ${plan.spokenChoice.trim()}`
+  }
+
+  return combined
 }
 
 function App() {
@@ -115,9 +121,9 @@ function App() {
     .reverse()
     .find((turn) => turn.transcript.speaker === 'Learner')?.transcript.text ?? ''
 
-  const handleLiveTranscript = async (text, { allowTopicConfirmation = true } = {}) => {
+  const handleLiveTranscript = async (text, { allowTopicConfirmation = true, bypassResponseLock = false } = {}) => {
     const learnerText = text.trim()
-    if (!learnerText || !liveSessionActiveRef.current || isResponding) return
+    if (!learnerText || !liveSessionActiveRef.current || (isResponding && !bypassResponseLock)) return
 
     if (pendingTopicShiftRef.current) {
       const choice = getTopicChoice(learnerText)
@@ -309,7 +315,7 @@ function App() {
 
     prepareLiveDraft()
     window.setTimeout(() => {
-      void handleLiveTranscript(pending.learnerText, { allowTopicConfirmation: false })
+      void handleLiveTranscript(pending.learnerText, { allowTopicConfirmation: false, bypassResponseLock: true })
     }, 0)
   }
 
@@ -472,7 +478,7 @@ function App() {
             </button>
           ))}
           {savedSessions.map((session, index) => (
-            <button key={session.id} type="button" className={`loom-session-item ${sessionId === 'live' && liveSessionRecordId === session.id ? 'loom-session-item-active' : ''}`} onClick={() => resumeSavedSession(session)}>
+            <button key={session.id} type="button" className={`loom-session-item ${liveSessionRecordId === session.id ? 'loom-session-item-active' : ''}`} onClick={() => resumeSavedSession(session)}>
               <span>{String(sessions.length + index + 1).padStart(2, '0')}</span>
               {session.title}
             </button>

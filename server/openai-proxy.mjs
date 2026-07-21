@@ -6,11 +6,29 @@ const port = Number(process.env.LOOM_API_PORT ?? 8787)
 const openaiApiKey = process.env.OPENAI_API_KEY
 const openaiBaseUrl = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'
 
-const jsonHeaders = {
+const allowedOrigins = new Set([
+  'http://127.0.0.1:5173',
+  'http://localhost:5173',
+  ...String(process.env.LOOM_ALLOWED_ORIGIN ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+])
+
+const baseJsonHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-  'Access-Control-Allow-Origin': process.env.LOOM_ALLOWED_ORIGIN ?? 'http://127.0.0.1:5173',
   'Content-Type': 'application/json',
+}
+
+function createJsonHeaders(request) {
+  const origin = request.headers.origin
+
+  return {
+    ...baseJsonHeaders,
+    'Access-Control-Allow-Origin': allowedOrigins.has(origin) ? origin : 'http://127.0.0.1:5173',
+    Vary: 'Origin',
+  }
 }
 
 const generationStepsSchema = {
@@ -198,7 +216,7 @@ const conversationReplySchema = {
 }
 
 function sendJson(response, statusCode, payload) {
-  response.writeHead(statusCode, jsonHeaders)
+  response.writeHead(statusCode, response.loomHeaders)
   response.end(JSON.stringify(payload))
 }
 
@@ -326,7 +344,7 @@ async function forwardSpeech(request, response) {
   }
 
   response.writeHead(200, {
-    'Access-Control-Allow-Origin': jsonHeaders['Access-Control-Allow-Origin'],
+    ...response.loomHeaders,
     'Content-Type': openaiResponse.headers.get('content-type') ?? 'audio/mpeg',
   })
   response.end(Buffer.from(await openaiResponse.arrayBuffer()))
@@ -364,6 +382,11 @@ async function forwardConversationReply(request, response) {
     ? `${body.plannedArtifact.viewAction ?? 'stay-on-board'} / ${body.plannedArtifact.artifactType ?? 'stay-on-board'} / board ${body.plannedArtifact.boardMode ?? 'keep'}: ${body.plannedArtifact.rationale ?? ''}`
     : 'None'
 
+  const requiresWebSearch = /\b(api|current|documentation|docs?|fonte|fonti|framework|latest|link|official|recent|ricerca|source|sources|url|version)\b/i.test(learnerText)
+  const webSearchInstruction = requiresWebSearch
+    ? 'The learner explicitly needs externally verified information. You must use web search, ground the answer in its results, and only say a source was added when the search returned one.'
+    : 'Use web search only when the learner asks for sources, documentation, a link, a place, a current version, an API, a framework, a recent fact, or other information that needs external verification.'
+
   const openaiResponse = await fetch(`${openaiBaseUrl}/responses`, {
     method: 'POST',
     headers: {
@@ -373,7 +396,7 @@ async function forwardConversationReply(request, response) {
     body: JSON.stringify({
       input: `Session: ${body.sessionTitle ?? 'Loom learning session'}\nArtifact type: ${body.artifactType ?? 'stay-on-board'}\nPlanned visual transition: ${plannedArtifact}\nCurrent board concepts:\n${boardContext || 'Empty board'}\nCurrent board links:\n${boardLinks || 'No links'}\nOpen comprehension checks:\n${pendingChecks || 'None'}\nRecent transcript:\n${transcript}\n\nLearner just asked: ${learnerText}`,
       instructions:
-        'You are Loom, a voice-first learning tutor. Return boardTitle as a concise 3-to-6-word title for the ongoing topic; keep the title stable once the topic is established. Reply in one or two short spoken sentences using clear, standard educational English: precise terms with a plain explanation. Be concrete, didactic, and helpful. When Planned visual transition is show-artifact, conclude the same reply with a natural phrase such as "now let me show you" and why the visual will help. When it is return-to-board, conclude naturally that you are returning to the board to connect the next idea. When it is continue-artifact, invite the learner to notice or change the relevant control. This must be one continuous answer, never a separate announcement. If Planned visual transition says board new-board, its boardActions must only describe the learner’s new topic; do not repeat ideas, formulas, or links from the old topic. Use web search only when the learner asks for sources, documentation, a link, a place, a current version, an API, a framework, a recent fact, or other information that needs external verification. Ground those answers in the search results and never invent links. Never put URLs, domains, markdown links, citation syntax, or source titles in text: when sources are found, say briefly that they were added to the Sources section. Return IDs from Open comprehension checks in resolvedCheckIds only when the learner has clearly answered them; otherwise return an empty array. Create zero to three short new comprehension checks only when there is enough context to assess understanding. Create zero to four boardActions only for the visual idea the learner needs to retain now: concise concepts, connections between known concept IDs, or a short formula. Use add_concept before connecting to a new concept. Do not create a link that is already listed in Current board links. Do not write sentences as board labels, do not repeat existing concepts, and do not mention implementation details or APIs.',
+        `You are Loom, a voice-first learning tutor. Return boardTitle as a concise 3-to-6-word title for the ongoing topic; keep the title stable once the topic is established. Reply in one or two short spoken sentences using clear, standard educational English: precise terms with a plain explanation. Be concrete, didactic, and helpful. When Planned visual transition is show-artifact, conclude the same reply with a natural phrase such as "now let me show you" and why the visual will help. When it is return-to-board, conclude naturally that you are returning to the board to connect the next idea. When it is continue-artifact, invite the learner to notice or change the relevant control. This must be one continuous answer, never a separate announcement. If Planned visual transition says board new-board, its boardActions must only describe the learner’s new topic; do not repeat ideas, formulas, or links from the old topic. ${webSearchInstruction} Never invent links. Never put URLs, domains, markdown links, citation syntax, or source titles in text: when sources are found, say briefly that they were added to the Sources section. Return IDs from Open comprehension checks in resolvedCheckIds only when the learner has clearly answered them; otherwise return an empty array. Create zero to three short new comprehension checks only when there is enough context to assess understanding. Create zero to four boardActions only for the visual idea the learner needs to retain now: concise concepts, connections between known concept IDs, or a short formula. Use add_concept before connecting to a new concept. Do not create a link that is already listed in Current board links. Do not write sentences as board labels, do not repeat existing concepts, and do not mention implementation details or APIs.`,
       model: body.model ?? process.env.LOOM_CONVERSATION_MODEL ?? 'gpt-5.6-terra',
       reasoning: {
         effort: 'low',
@@ -387,6 +410,8 @@ async function forwardConversationReply(request, response) {
         },
       },
       tools: [{ type: 'web_search', search_context_size: 'medium' }],
+      tool_choice: requiresWebSearch ? 'required' : 'auto',
+      include: requiresWebSearch ? ['web_search_call.action.sources'] : [],
     }),
   })
 
@@ -436,22 +461,55 @@ function extractSources(payload) {
   const sources = []
   const addSource = (candidate) => {
     if (!candidate?.url || !candidate.url.startsWith('http') || sources.some((source) => source.url === candidate.url)) return
+    const url = normalizeSourceUrl(candidate.url)
+    if (!url || sources.some((source) => source.url === url)) return
     sources.push({
-      title: candidate.title?.trim() || new URL(candidate.url).hostname.replace(/^www\./, ''),
-      url: candidate.url,
+      title: getSourceTitle(candidate, url),
+      url,
     })
   }
 
-  for (const item of payload?.output ?? []) {
-    for (const part of item?.content ?? []) {
-      for (const annotation of part?.annotations ?? []) {
-        if (annotation?.type === 'url_citation') addSource(annotation)
-      }
+  const visited = new WeakSet()
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return
+    if (visited.has(value)) return
+    visited.add(value)
+
+    if (typeof value.url === 'string') addSource(value)
+    if (Array.isArray(value)) {
+      value.forEach(visit)
+      return
     }
-    for (const source of item?.action?.sources ?? []) addSource(source)
+    Object.values(value).forEach(visit)
   }
 
+  visit(payload?.output)
+
   return sources.slice(0, 4)
+}
+
+function normalizeSourceUrl(value) {
+  try {
+    const url = new URL(value)
+    url.hash = ''
+    for (const key of [...url.searchParams.keys()]) {
+      if (key.startsWith('utm_')) url.searchParams.delete(key)
+    }
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/$/, '')
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function getSourceTitle(candidate, url) {
+  const hostname = new URL(url).hostname.replace(/^www\./, '')
+  const provided = candidate.title?.trim() || candidate.name?.trim()
+  if (provided && provided.toLowerCase() !== hostname.toLowerCase()) return provided
+
+  const path = new URL(url).pathname.split('/').filter(Boolean).at(-1)
+  if (!path) return hostname
+  return `${hostname} · ${path.replace(/[-_]/g, ' ')}`
 }
 
 function prepareSpokenText(text, sourceCount) {
@@ -464,7 +522,11 @@ function prepareSpokenText(text, sourceCount) {
     .replace(/\s{2,}/g, ' ')
     .trim()
 
-  if (!sourceCount || /sources? section/i.test(withoutLinks)) return withoutLinks
+  if (!sourceCount && /sources? section/i.test(withoutLinks)) {
+    return withoutLinks.replace(/(?:I|we) (?:added|have added)[^.]*sources? section\.?/i, 'I could not retrieve a reliable source this time.')
+  }
+
+  if (!sourceCount || /(?:added|included|placed).*sources?/i.test(withoutLinks)) return withoutLinks
   return `${withoutLinks} I added ${sourceCount === 1 ? 'the source' : 'the sources'} to the Sources section.`
 }
 
@@ -540,8 +602,10 @@ async function forwardArtifactPlan(request, response) {
 }
 
 async function handleRequest(request, response) {
+  response.loomHeaders = createJsonHeaders(request)
+
   if (request.method === 'OPTIONS') {
-    response.writeHead(204, jsonHeaders)
+    response.writeHead(204, response.loomHeaders)
     response.end()
     return
   }
